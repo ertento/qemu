@@ -32,12 +32,12 @@ int riscv_reri_inject(void *opaque, int record, vaddr addr, uint64_t info)
     RiscvReriStatus sts;
     int rc;
 
-    if (record >= s->nr_err_banks)
+    if (record < 0 || record >= bank->bank_info.n_err_recs)
         return EINVAL;
 
     sts.value = 0;
-    sts.ue = 1;
-    sts.at = 3;
+    sts.uec = 1;
+    sts.ait = 3;
     sts.tt = 5;
     sts.iv = 1;
 
@@ -98,6 +98,7 @@ static MemTxResult riscv_reri_hart_write_impl(void *opaque, hwaddr addr,
 
     if (clrsts) {
 	    qemu_irq_lower(s->irqs[IRQ_HIGH_PRIORITY]);
+	    qemu_irq_lower(s->irqs[IRQ_LOW_PRIORITY]);
     }
 
     return MEMTX_OK;

@@ -67,8 +67,8 @@ int riscv_reri_write_error_record(RiscvReriErrorBank *err_bank, uint32_t index,
  * @param vendor_id[in] - JEDEC manufacturer id
  * @param imp_id[in] - Unique identity of the component
  */
-void riscv_reri_register_init(RiscvReriErrorBank *err_bank, uint16_t vendor_id,
-                              uint16_t imp_id, uint16_t nr_records);
+void riscv_reri_register_init(RiscvReriErrorBank *err_bank, uint32_t vendor_id,
+                              uint32_t imp_id, uint16_t nr_records);
 /**
  * @brief Inject a data corruption error
  *
