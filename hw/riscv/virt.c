@@ -2379,7 +2379,7 @@ static void virt_machine_init(MachineState *machine)
         for (i = 0; i < hart_count; i++) {
             /* RERI HART device emulator */
             riscv_reri_hart_create((s->memmap[VIRT_RERI_BANK_HARTS].base + (i * RISCV_RERI_DEV_SIZE)),
-                                   base_hartid + i);
+                                   base_hartid + i,s->reri_records);
         }
     }
 
@@ -2452,6 +2452,7 @@ static void virt_machine_instance_init(Object *obj)
     s->oem_table_id = g_strndup(ACPI_BUILD_APPNAME8, 8);
     s->acpi = ON_OFF_AUTO_AUTO;
     s->iommu_sys = ON_OFF_AUTO_AUTO;
+    s->reri_records = 1;
 }
 
 static char *virt_get_aia_guests(Object *obj, Error **errp)
@@ -2578,6 +2579,30 @@ static void virt_set_rpmi_sysmsi_inject(Object *obj, const char *val, Error **er
         error_append_hint(errp, "Valid values are shutdown, reboot "
                           "and suspend.\n");
     }
+}
+
+static char *virt_get_reri_records(Object *obj, Error **errp)
+{
+    RISCVVirtState *s = RISCV_VIRT_MACHINE(obj);
+
+    return g_strdup_printf("%u", s->reri_records);
+}
+
+static void virt_set_reri_records(Object *obj, const char *val, Error **errp)
+{
+    RISCVVirtState *s = RISCV_VIRT_MACHINE(obj);
+    unsigned long records;
+    char *end;
+
+    records = strtoul(val, &end, 10);
+    if (*val == 0 || *end != 0 || records < 1 || records > MAX_ERROR_RECORDS) {
+        error_setg(errp, "Invalid RERI record count");
+        error_append_hint(errp, "Valid values are between 1 and %d.\n",
+                          MAX_ERROR_RECORDS);
+        return;
+    }
+
+    s->reri_records = records;
 }
 
 static bool virt_get_reri(Object *obj, Error **errp)
@@ -2771,7 +2796,11 @@ static void virt_machine_class_init(ObjectClass *oc, const void *data)
     object_class_property_set_description(oc, "reri",
                                           "Set on/off to enable/disable "
                                           "RERI support");
-
+    object_class_property_add_str(oc, "reri-records",
+                              virt_get_reri_records,
+                              virt_set_reri_records);
+object_class_property_set_description(oc, "reri-records",
+                                      "Number of RERI error records per hart");
     object_class_property_add_bool(oc, "trace-log",
                                    virt_get_trace_log,
                                    virt_set_trace_log);

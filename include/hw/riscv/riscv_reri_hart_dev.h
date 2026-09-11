@@ -36,6 +36,7 @@ typedef struct RiscvReriState {
     QemuMutex lock;
     MemoryRegion iomem;
     uint32_t nr_err_banks;
+    uint32_t nr_records;
     uint32_t hartid;
     RiscvReriErrorBank *err_banks;
 } RiscvReriState;
@@ -44,9 +45,9 @@ enum {
     IRQ_LOW_PRIORITY = 0,
     IRQ_HIGH_PRIORITY = 1
 };
+DeviceState *riscv_reri_hart_create(hwaddr addr, uint32_t hartid,uint32_t records);
 
-DeviceState *riscv_reri_hart_create(hwaddr addr, uint32_t hartid);
-
-int riscv_reri_inject(void *opaque, int record, hwaddr addr, uint64_t info);
+int riscv_reri_inject(void *opaque, int record, RiscvReriStatus status,
+                      hwaddr addr, uint64_t info);
 
 #endif

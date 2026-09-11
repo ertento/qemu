@@ -58,6 +58,7 @@ struct RISCVVirtState {
     bool have_aclint;
     bool have_rpmi;
     bool have_reri;
+    uint32_t reri_records;
     RISCVVirtAIAType aia_type;
     int aia_guests;
     char *oem_id;

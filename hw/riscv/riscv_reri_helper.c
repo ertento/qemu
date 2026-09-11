@@ -21,12 +21,21 @@
 int riscv_reri_read(RiscvReriErrorBank *err_bank, uintptr_t addr, uint64_t *out,
                     unsigned size)
 {
+    uint64_t valid_summary = 1;
     uint64_t val64 = 0;
+    uint32_t i;
     uint8_t *reg;
     if (addr + size > sizeof(RiscvReriErrorBank) ||
        ((addr & 0x7) + size) > 8) {
         return EINVAL;
     }
+
+    for (i = 0; i < err_bank->bank_info.n_err_recs; i++) {
+        valid_summary |=
+            (uint64_t)err_bank->records[i].status_i.v << (i + 1);
+    }
+
+    err_bank->valid_summary = valid_summary;
     reg = ((uint8_t *)err_bank) + addr;
     while (size--) {
         val64 <<= 8;
@@ -69,8 +78,11 @@ int riscv_reri_write_error_record(RiscvReriErrorBank *err_bank, uint32_t index,
  * (ce XOR ued XOR uec), consistent with how this helper is invoked
  * both from register writes and from riscv_reri_do_inject().
  */
-static uint64_t riscv_reri_write_status(RiscvReriStatus old, RiscvReriStatus new)
+static uint64_t riscv_reri_write_status(RiscvReriStatus old,
+                                        RiscvReriStatus new,
+                                        bool *overwrite)
 {
+    *overwrite = false;
     new.value &= RERI_STS_MASK;
     qemu_log_mask(LOG_GUEST_ERROR, "%s: new status 0x%lx\n",
                   __func__, new.value);
@@ -87,19 +99,19 @@ static uint64_t riscv_reri_write_status(RiscvReriStatus old, RiscvReriStatus new
         old.ued = new.ued & ~new.uec;
         old.ce  = new.ce & ~new.uec & ~new.ued;
         old.mo  = 0;
+        *overwrite = true;
     } else {
         /* A valid error is already logged: apply severity/priority rules. */
         int old_sev = old.uec ? 2 : (old.ued ? 1 : (old.ce ? 0 : -1));
         int new_sev = new.uec ? 2 : (new.ued ? 1 : 0);
-        bool overwrite = false;
 
         if (new_sev > old_sev) {
             old.mo = 0;
-            overwrite = true;
+            *overwrite = true;
         } else if (new_sev == old_sev) {
             old.mo = 1;
             if (new.pri > old.pri) {
-                overwrite = true;
+                *overwrite = true;
             }
         }
         old.rdip = 0;
@@ -107,7 +119,7 @@ static uint64_t riscv_reri_write_status(RiscvReriStatus old, RiscvReriStatus new
         old.ued |= new.ued;
         old.ce  |= new.ce;
 
-        if (!overwrite) {
+        if (!*overwrite) {
             return old.value;
         }
     }
@@ -124,6 +136,27 @@ static uint64_t riscv_reri_write_status(RiscvReriStatus old, RiscvReriStatus new
     old.ec    = new.ec;
     old.v     = 1;
     return old.value;
+}
+
+/*
+ * Software writes to status_i prepare an EID injection.
+ * V and RDIP are set by the device only when EID reaches zero.
+ */
+static uint64_t riscv_reri_stage_status(RiscvReriStatus old,
+                                         RiscvReriStatus new)
+{
+    new.value &= RERI_STS_MASK;
+
+    /* Do not modify a record that is already valid. */
+    if (old.v) {
+        return old.value;
+    }
+
+    new.v = 0;
+    new.rdip = 0;
+    new.mo = 0;
+
+    return new.value;
 }
 
 int riscv_reri_write(RiscvReriErrorBank *err_bank, uintptr_t addr, uint64_t val,
@@ -178,7 +211,7 @@ int riscv_reri_write(RiscvReriErrorBank *err_bank, uintptr_t addr, uint64_t val,
     case 8: /* status_i */
         qemu_log_mask(LOG_GUEST_ERROR, "%s (%d): reg: 0x%lx\n", __func__, __LINE__, reg);
         record->status_i.value =
-            riscv_reri_write_status(record->status_i, (RiscvReriStatus)reg);
+	    riscv_reri_stage_status(record->status_i, (RiscvReriStatus)reg);
         break;
     /* XXX: Allow modification of addr_i and info_i only if status_i.v==0? */
     case 16: /* addr_i */
@@ -200,11 +233,15 @@ int riscv_reri_write(RiscvReriErrorBank *err_bank, uintptr_t addr, uint64_t val,
 int riscv_reri_do_inject(RiscvReriErrorRecord *record, RiscvReriStatus sts,
                          uint64_t addr, uint64_t info)
 {
+    bool overwrite;
     RiscvReriStatus old;
+
     old = record->status_i;
-    record->status_i.value = riscv_reri_write_status(old, sts);
-    record->addr_i = addr;
-    record->info_i = info;
+    record->status_i.value = riscv_reri_write_status(old, sts, &overwrite);
+    if (overwrite) {
+        record->addr_i = addr;
+        record->info_i = info;
+    }
     return 0;
 }
 
