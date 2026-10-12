@@ -41,6 +41,43 @@ static int riscv_reri_status_severity(RiscvReriStatus status)
 }
 
 /*
+ * The two RAS interrupt lines are shared by every record in the hart bank.
+ * Recompute their levels from all valid records so that acknowledging one
+ * record cannot hide another pending error, or leave a stale IRQ asserted.
+ * The caller must hold s->lock.
+ */
+static void riscv_reri_update_irqs_locked(RiscvReriState *s)
+{
+    bool low_pending = false;
+    bool high_pending = false;
+
+    for (uint32_t i = 0; i < s->nr_records; i++) {
+        RiscvReriErrorRecord *record = &s->err_banks->records[i];
+        unsigned int signal;
+
+        if (!record->status_i.v) {
+            continue;
+        }
+
+        if (record->status_i.uec) {
+            signal = record->control_i.uecs;
+        } else if (record->status_i.ued) {
+            signal = record->control_i.ueds;
+        } else if (record->status_i.ce) {
+            signal = record->control_i.ces;
+        } else {
+            continue;
+        }
+
+        low_pending |= signal == 1;
+        high_pending |= signal == 2;
+    }
+
+    qemu_set_irq(s->irqs[IRQ_LOW_PRIORITY], low_pending);
+    qemu_set_irq(s->irqs[IRQ_HIGH_PRIORITY], high_pending);
+}
+
+/*
  * QEMU models the records of a hart bank as a common pool.  Prefer an
  * invalid record.  If the pool is full, target the valid record holding
  * the lowest severity and, within that severity, the lowest priority.
@@ -82,7 +119,6 @@ int riscv_reri_inject(void *opaque, int record, RiscvReriStatus sts,
 {
     RiscvReriState *s = opaque;
     RiscvReriErrorBank *bank = s->err_banks;
-    int signal = 0;
     int rc;
 
     if (!bank || record < -1 ||
@@ -96,20 +132,8 @@ int riscv_reri_inject(void *opaque, int record, RiscvReriStatus sts,
         record = riscv_reri_select_record(s);
     }
     rc = riscv_reri_do_inject(&bank->records[record], sts, addr, info);
-    if (sts.uec) {
-        signal = bank->records[record].control_i.uecs;
-    } else if (sts.ued) {
-        signal = bank->records[record].control_i.ueds;
-    } else {
-        signal = bank->records[record].control_i.ces;
-    }
+    riscv_reri_update_irqs_locked(s);
     qemu_mutex_unlock(&s->lock);
-
-    if (signal == 1) {
-        qemu_irq_raise(s->irqs[IRQ_LOW_PRIORITY]);
-    } else if (signal == 2) {
-        qemu_irq_raise(s->irqs[IRQ_HIGH_PRIORITY]);
-    }
 
     qemu_log_mask(LOG_GUEST_ERROR,
                   "RERI hart %u hardware injection: record=%d "
@@ -224,6 +248,9 @@ static MemTxResult riscv_reri_hart_write_impl(void *opaque, hwaddr addr,
 
     qemu_mutex_lock(&s->lock);
     error = riscv_reri_write(s->err_banks, addr, val64, size, &inject, &clrsts);
+    if (error == 0) {
+        riscv_reri_update_irqs_locked(s);
+    }
     qemu_mutex_unlock(&s->lock);
     if (error != 0) {
         return MEMTX_ERROR;
@@ -235,10 +262,6 @@ static MemTxResult riscv_reri_hart_write_impl(void *opaque, hwaddr addr,
         } else {
             qemu_coroutine_enter_if_inactive(s->co);
         }
-    }
-
-    if (clrsts) {
-	    qemu_irq_lower(s->irqs[IRQ_HIGH_PRIORITY]);
     }
 
     return MEMTX_OK;
@@ -258,12 +281,9 @@ static void coroutine_fn riscv_error_inject(void *opaque)
 
             if (rc == RISCV_RERI_INJECT_WAIT) {
                 waiting = true;
-            } else if (rc == RISCV_RERI_INJECT_LOW) {
-                qemu_irq_raise(s->irqs[IRQ_LOW_PRIORITY]);
-            } else if (rc == RISCV_RERI_INJECT_HIGH) {
-                qemu_irq_raise(s->irqs[IRQ_HIGH_PRIORITY]);
             }
         }
+        riscv_reri_update_irqs_locked(s);
         qemu_mutex_unlock(&s->lock);
 
         if (waiting) {
